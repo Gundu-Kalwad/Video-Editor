@@ -6,7 +6,6 @@ on:
       json_spec:
         description: 'JSON Operation Spec'
         required: true
-        # No default value. Strict input required.
 
 jobs:
   render-video:
@@ -16,10 +15,10 @@ jobs:
       - name: 📥 Checkout Code
         uses: actions/checkout@v3
 
-      - name: 🎥 Setup FFmpeg
-        uses: FedericoCarboni/setup-ffmpeg@v2
-        with:
-          ffmpeg-version: release
+      - name: 🎥 Install FFmpeg (Full Version)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -28,12 +27,14 @@ jobs:
 
       - name: 🚀 Run Video Editor
         env:
-          # CRITICAL FIX: Load JSON into an ENV variable first.
-          # This prevents Bash from breaking the string at spaces/quotes.
           JSON_PAYLOAD: ${{ inputs.json_spec }}
         run: |
-          # Pass the env variable inside double quotes
-          python video_editor.py --json "$JSON_PAYLOAD"
+          # The Easy Way: Write JSON to a file first.
+          # This avoids ALL issues with quotes in Bash.
+          echo "$JSON_PAYLOAD" > job.json
+          
+          # Run the script pointing to the file
+          python video_editor.py --spec job.json
 
       - name: 📤 Upload Result
         uses: actions/upload-artifact@v4
