@@ -6,7 +6,7 @@ on:
       json_spec:
         description: 'JSON Operation Spec'
         required: true
-        # No default value provided. Input is mandatory.
+        # No default value. Strict input required.
 
 jobs:
   render-video:
@@ -27,10 +27,13 @@ jobs:
           python-version: '3.10'
 
       - name: 🚀 Run Video Editor
+        env:
+          # CRITICAL FIX: Load JSON into an ENV variable first.
+          # This prevents Bash from breaking the string at spaces/quotes.
+          JSON_PAYLOAD: ${{ inputs.json_spec }}
         run: |
-          # The input is passed strictly via environment variable
-          # If inputs.json_spec is empty, this script will fail (as expected)
-          python video_editor.py --json "${{ inputs.json_spec }}"
+          # Pass the env variable inside double quotes
+          python video_editor.py --json "$JSON_PAYLOAD"
 
       - name: 📤 Upload Result
         uses: actions/upload-artifact@v4
