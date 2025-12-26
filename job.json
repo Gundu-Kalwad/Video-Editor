@@ -1,0 +1,46 @@
+{
+  "assets": {
+    "input_video": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
+    "watermark": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Python-logo-notext.svg/200px-Python-logo-notext.svg.png"
+  },
+  "output": {
+    "path": "output/vertical_viral.mp4",
+    "format": "mp4",
+    "preset": "ultrafast",
+    "crf": 23
+  },
+  "operations": [
+    {
+      "action": "trim",
+      "start_time": 2,
+      "end_time": 10
+    },
+    {
+      "action": "set_resolution",
+      "width": 1080,
+      "height": 1920,
+      "mode": "blur"
+    },
+    {
+      "action": "image_overlay",
+      "asset": "watermark",
+      "position": "top-right",
+      "x": 40,
+      "y": 40,
+      "scale": 1.0,
+      "opacity": 0.85
+    },
+    {
+      "action": "text",
+      "content": "This video was edited automatically using GitHub Actions! No manual work required.",
+      "position": "center",
+      "y": 1400,
+      "size": 60,
+      "color": "white",
+      "font": "Sans",
+      "outline": true,
+      "wrap_width": 25,
+      "line_spacing": 10
+    }
+  ]
+}
