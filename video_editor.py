@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-FFmpeg-based video editor (Agent/CI friendly).
-Features: Base64 decoding, URL downloading, Auto-Cleanup, Text Wrapping.
+FFmpeg Video Editor (Robust Version)
+Features: Base64 decoding, URL downloading, Text Wrapping, Direct GitHub Event Reading.
 """
 import argparse
 import base64
@@ -95,7 +95,6 @@ def run(cmd: List[str], dry_run: bool = False) -> None:
         raise SystemExit(result.returncode)
 
 def escape_drawtext(text: str) -> str:
-    # CRITICAL FIX: Escape for FFmpeg filter syntax
     text = text.replace("\\", "\\\\") 
     text = text.replace(":", "\\:")
     text = text.replace("%", "\\%")
@@ -372,17 +371,29 @@ def load_spec_from_path(path: str) -> Dict:
         spec = json.load(f)
     return preprocess_spec(spec)
 
-def load_spec_from_env() -> Dict:
-    # Safely load JSON from Environment Variable
-    env_str = os.environ.get("JSON_PAYLOAD", "")
-    if not env_str:
-        raise ValueError("JSON_PAYLOAD environment variable is empty.")
+def load_from_github_event() -> Dict:
+    # --- NUCLEAR OPTION: READ RAW INPUT FROM DISK ---
+    # This bypasses all Shell and YAML parsing logic.
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path or not os.path.exists(event_path):
+        raise ValueError("GITHUB_EVENT_PATH not found. Are you running in GitHub Actions?")
+    
     try:
-        spec = json.loads(env_str)
-        return preprocess_spec(spec)
-    except json.JSONDecodeError as e:
-        print(f"[Fatal] Invalid JSON in Environment Variable: {e}")
-        print(f"Content dump: {env_str[:100]}...")
+        with open(event_path, "r", encoding="utf-8") as f:
+            event_payload = json.load(f)
+        
+        # Extract the 'json_spec' input
+        # Structure is usually: {"inputs": {"json_spec": "..."}}
+        raw_spec_str = event_payload.get("inputs", {}).get("json_spec")
+        
+        if not raw_spec_str:
+            raise ValueError("Input 'json_spec' is empty or missing in GitHub Event payload.")
+            
+        print("[Info] Successfully read raw JSON input from GitHub Event path.")
+        return preprocess_spec(json.loads(raw_spec_str))
+        
+    except Exception as e:
+        print(f"[Fatal] Failed to read GitHub Event: {e}")
         sys.exit(1)
 
 def main() -> None:
@@ -394,18 +405,14 @@ def main() -> None:
     
     spec = None
     try:
-        # Priority 1: File
         if args.spec:
             spec = load_spec_from_path(args.spec)
-        # Priority 2: Argument
         elif args.json:
             spec = preprocess_spec(json.loads(args.json))
-        # Priority 3: Environment Variable (Recommended for CI)
-        elif "JSON_PAYLOAD" in os.environ:
-            spec = load_spec_from_env()
         else:
-            print("Error: No input provided. Use --spec, --json, or set JSON_PAYLOAD env var.")
-            sys.exit(1)
+            # Default fallback: Try to read from GitHub Actions Event
+            # This is automatically triggered if no arguments are passed
+            spec = load_from_github_event()
 
         editor = FFmpegEditor(spec)
         cmd, thumb_cmds = editor.build()
