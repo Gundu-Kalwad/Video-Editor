@@ -3,9 +3,10 @@ name: Video Editor Pipeline
 on:
   workflow_dispatch:
     inputs:
-      json_spec:
-        description: 'JSON Operation Spec'
+      json_url:
+        description: 'URL to the JSON configuration file (Raw link)'
         required: true
+        # Example: https://gist.githubusercontent.com/user/id/raw/job.json
 
 jobs:
   render-video:
@@ -25,11 +26,15 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 🚀 Run Video Editor
-        # No arguments needed. 
-        # Python will auto-detect it is running in Actions and read the input safely.
+      - name: 📥 Download JSON Spec
         run: |
-          python video_editor.py
+          # Download the JSON from the URL provided in inputs
+          # -L follows redirects (important for GitHub/Gist raw links)
+          curl -L "${{ inputs.json_url }}" -o job.json
+
+      - name: 🚀 Run Video Editor
+        run: |
+          python video_editor.py --spec job.json
 
       - name: 📤 Upload Result
         uses: actions/upload-artifact@v4
