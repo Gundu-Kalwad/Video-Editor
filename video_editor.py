@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-FFmpeg Video Editor (Robust Version)
-Features: Base64 decoding, URL downloading, Text Wrapping, Direct GitHub Event Reading.
+FFmpeg Video Editor (File-Based Input)
 """
 import argparse
 import base64
@@ -17,7 +16,6 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# Global list to track temp files for cleanup
 TEMP_FILES = []
 
 def register_temp_file(path: str) -> None:
@@ -29,12 +27,10 @@ def cleanup_temp_files() -> None:
     print(f"[Info] Cleaning up {len(TEMP_FILES)} temporary files...")
     for path in TEMP_FILES:
         try:
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception as e:
-            print(f"[Warning] Failed to delete temp file {path}: {e}")
+            if os.path.exists(path): os.remove(path)
+        except Exception as e: print(f"[Warning] Failed to delete temp file {path}: {e}")
 
-# --- ASSET LOADING HELPERS ---
+# --- ASSET LOADING ---
 
 def decode_data_uri(uri: str) -> str:
     if not uri.startswith("data:"): return uri
@@ -371,35 +367,9 @@ def load_spec_from_path(path: str) -> Dict:
         spec = json.load(f)
     return preprocess_spec(spec)
 
-def load_from_github_event() -> Dict:
-    # --- NUCLEAR OPTION: READ RAW INPUT FROM DISK ---
-    # This bypasses all Shell and YAML parsing logic.
-    event_path = os.environ.get("GITHUB_EVENT_PATH")
-    if not event_path or not os.path.exists(event_path):
-        raise ValueError("GITHUB_EVENT_PATH not found. Are you running in GitHub Actions?")
-    
-    try:
-        with open(event_path, "r", encoding="utf-8") as f:
-            event_payload = json.load(f)
-        
-        # Extract the 'json_spec' input
-        # Structure is usually: {"inputs": {"json_spec": "..."}}
-        raw_spec_str = event_payload.get("inputs", {}).get("json_spec")
-        
-        if not raw_spec_str:
-            raise ValueError("Input 'json_spec' is empty or missing in GitHub Event payload.")
-            
-        print("[Info] Successfully read raw JSON input from GitHub Event path.")
-        return preprocess_spec(json.loads(raw_spec_str))
-        
-    except Exception as e:
-        print(f"[Fatal] Failed to read GitHub Event: {e}")
-        sys.exit(1)
-
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--spec", help="Path to JSON spec file")
-    p.add_argument("--json", help="Direct JSON string")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
     
@@ -407,12 +377,9 @@ def main() -> None:
     try:
         if args.spec:
             spec = load_spec_from_path(args.spec)
-        elif args.json:
-            spec = preprocess_spec(json.loads(args.json))
         else:
-            # Default fallback: Try to read from GitHub Actions Event
-            # This is automatically triggered if no arguments are passed
-            spec = load_from_github_event()
+            print("Error: No input provided. Use --spec <file.json>")
+            sys.exit(1)
 
         editor = FFmpegEditor(spec)
         cmd, thumb_cmds = editor.build()
