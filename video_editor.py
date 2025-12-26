@@ -38,7 +38,6 @@ def cleanup_temp_files() -> None:
 # --- ASSET LOADING HELPERS ---
 
 def decode_data_uri(uri: str) -> str:
-    """Decodes data URI to temp file."""
     if not uri.startswith("data:"): return uri
     try:
         header, encoded = uri.split(",", 1)
@@ -50,25 +49,20 @@ def decode_data_uri(uri: str) -> str:
         t.write(data)
         t.close()
         register_temp_file(t.name)
-        print(f"[Info] Decoded Base64 asset: {t.name}")
         return t.name
     except Exception as e:
         print(f"[Error] Failed to decode Base64: {e}")
         return uri
 
 def download_asset(url: str) -> str:
-    """Downloads HTTP/HTTPS URL to temp file."""
     try:
         print(f"[Info] Downloading asset: {url}")
         ext = Path(url).suffix or ".tmp"
         if "?" in ext: ext = ext.split("?")[0]
-        
         t = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
-        # generic User-Agent to avoid 403s
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req) as response, open(t.name, 'wb') as out_file:
             out_file.write(response.read())
-        
         register_temp_file(t.name)
         return t.name
     except Exception as e:
@@ -76,7 +70,6 @@ def download_asset(url: str) -> str:
         return url
 
 def preprocess_spec(spec: Dict) -> Dict:
-    """Resolves Base64 and URLs in the assets block."""
     assets = spec.get("assets", {})
     new_assets = {}
     for key, val in assets.items():
@@ -85,13 +78,9 @@ def preprocess_spec(spec: Dict) -> Dict:
             if v.startswith("data:"): return decode_data_uri(v)
             if v.startswith("http://") or v.startswith("https://"): return download_asset(v)
             return v
-
-        if isinstance(val, list):
-            new_assets[key] = [process_item(v) for v in val]
-        elif isinstance(val, str):
-            new_assets[key] = process_item(val)
-        else:
-            new_assets[key] = val
+        if isinstance(val, list): new_assets[key] = [process_item(v) for v in val]
+        elif isinstance(val, str): new_assets[key] = process_item(val)
+        else: new_assets[key] = val
     spec["assets"] = new_assets
     return spec
 
@@ -107,10 +96,11 @@ def run(cmd: List[str], dry_run: bool = False) -> None:
         raise SystemExit(result.returncode)
 
 def escape_drawtext(text: str) -> str:
-    # 1. Escape slashes, colons, percent
-    text = text.replace("\\", "\\\\").replace(":", "\\:").replace("%", "\\%")
-    # 2. Escape single quotes because we wrap text='' in single quotes in the filter
-    text = text.replace("'", "'\''") 
+    # CRITICAL FIX: Escape for FFmpeg filter syntax
+    text = text.replace("\\", "\\\\") 
+    text = text.replace(":", "\\:")
+    text = text.replace("%", "\\%")
+    text = text.replace("'", "\\'") # Correct escape for drawtext='...'
     return text
 
 def escape_path_for_filter(path: str) -> str:
@@ -120,13 +110,10 @@ def atempo_chain(factor: float) -> List[str]:
     chain = []
     remaining = factor
     while remaining > 2.0:
-        chain.append(2.0)
-        remaining /= 2.0
+        chain.append(2.0); remaining /= 2.0
     while remaining < 0.5:
-        chain.append(0.5)
-        remaining /= 0.5
-    if not math.isclose(remaining, 1.0):
-        chain.append(remaining)
+        chain.append(0.5); remaining /= 0.5
+    if not math.isclose(remaining, 1.0): chain.append(remaining)
     return chain or [1.0]
 
 def position_to_xy(position: Optional[str], x: Optional[int], y: Optional[int]) -> Tuple[str, str]:
@@ -154,79 +141,52 @@ def has_audio_stream(path: str, ffprobe: str = "ffprobe") -> bool:
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
         return res.stdout.strip() != b""
-    except FileNotFoundError:
-        return True
+    except FileNotFoundError: return True
 
 class FFmpegEditor:
     def __init__(self, spec: Dict, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe"):
         self.spec = spec
-        self.assets: Dict[str, str] = spec.get("assets", {})
-        self.default_fontfile: Optional[str] = spec.get("default_fontfile")
+        self.assets = spec.get("assets", {})
+        self.default_fontfile = spec.get("default_fontfile")
         self.ffmpeg = ffmpeg
         self.ffprobe = ffprobe
-        self.inputs: List[str] = []
-        self.filter_lines: List[str] = []
-        self.vlabel: Optional[str] = None
-        self.alabel: Optional[str] = None
-        self.next_v = 1
-        self.next_a = 1
+        self.inputs = []
+        self.filter_lines = []
+        self.vlabel = None; self.alabel = None
+        self.next_v = 1; self.next_a = 1
         self.drop_audio = False
-        self.thumb_actions: List[Dict] = []
+        self.thumb_actions = []
 
         main_input = self._get_main_input()
         self.inputs.append(main_input)
         self._init_streams(main_input)
 
     def _get_main_input(self) -> str:
-        if "input_video" in self.spec and self.spec["input_video"]:
-            return str(self.spec["input_video"])
-        if "input_video" in self.assets and self.assets["input_video"]:
-             return str(self.assets["input_video"])
+        if "input_video" in self.spec and self.spec["input_video"]: return str(self.spec["input_video"])
+        if "input_video" in self.assets and self.assets["input_video"]: return str(self.assets["input_video"])
         vids = self.assets.get("input_videos")
-        if isinstance(vids, list) and vids:
-            return str(vids[0])
+        if isinstance(vids, list) and vids: return str(vids[0])
         raise ValueError("input_video is required")
 
     def _resolve_path(self, op: Dict, key: str = "path") -> Optional[str]:
         if key in op and op[key]: return str(op[key])
         desired = op.get("asset") or op.get("filename")
         if not desired: return None
-
         if desired in self.assets:
             val = self.assets[desired]
             return str(val[0]) if isinstance(val, list) else str(val)
-
-        matches: List[str] = []
-        for _, val in self.assets.items():
-            if isinstance(val, list):
-                for item in val:
-                    if str(item) == str(desired) or Path(item).name == Path(desired).name:
-                        matches.append(str(item))
-            else:
-                if str(val) == str(desired) or Path(val).name == Path(desired).name:
-                    matches.append(str(val))
-        
-        if not matches: return desired # Fallback to raw string if not an asset key
-        return matches[0]
+        return desired # Fallback
 
     def _init_streams(self, main_input: str) -> None:
-        self.vlabel = "v0"
-        self.filter_lines.append(f"[0:v]null[{self.vlabel}]")
+        self.vlabel = "v0"; self.filter_lines.append(f"[0:v]null[{self.vlabel}]")
         if has_audio_stream(main_input, self.ffprobe):
-            self.alabel = "a0"
-            self.filter_lines.append(f"[0:a]anull[{self.alabel}]")
-        else:
-            self.alabel = None
+            self.alabel = "a0"; self.filter_lines.append(f"[0:a]anull[{self.alabel}]")
+        else: self.alabel = None
 
     def _new_v(self) -> str:
-        lbl = f"v{self.next_v}"
-        self.next_v += 1
-        return lbl
-
+        lbl = f"v{self.next_v}"; self.next_v += 1; return lbl
     def _new_a(self) -> str:
-        lbl = f"a{self.next_a}"
-        self.next_a += 1
-        return lbl
+        lbl = f"a{self.next_a}"; self.next_a += 1; return lbl
 
     def add_video_filter(self, expr: str, input_label: Optional[str] = None) -> None:
         if input_label is None: input_label = self.vlabel
@@ -248,16 +208,12 @@ class FFmpegEditor:
         overlay_filters = []
         overlay_filters.append(f"[{idx}:v]format=rgba[{base_label}_fmt]")
         in_label = f"{base_label}_fmt"
-        
         if scale_expr:
-            # Use safe scale expression directly
             overlay_filters.append(f"[{in_label}]scale={scale_expr}[{base_label}_s]")
             in_label = f"{base_label}_s"
-        
         if opacity is not None:
             overlay_filters.append(f"[{in_label}]colorchannelmixer=aa={opacity}[{base_label}_o]")
             in_label = f"{base_label}_o"
-        
         final_label = f"{base_label}_out"
         overlay_filters.append(f"[{in_label}]copy[{final_label}]")
         self.filter_lines.extend(overlay_filters)
@@ -266,7 +222,6 @@ class FFmpegEditor:
     def handle_operations(self) -> None:
         for op in self.spec.get("operations", []):
             action = op.get("action", "").lower()
-            
             if action == "trim":
                 st = op.get("start_time", 0)
                 et = op.get("end_time")
@@ -276,45 +231,25 @@ class FFmpegEditor:
                 else:
                     self.add_video_filter(f"trim=start={st},setpts=PTS-STARTPTS")
                     if self.alabel: self.add_audio_filter(f"atrim=start={st},asetpts=PTS-STARTPTS")
-            
             elif action == "set_resolution":
                 w, h = op.get("width"), op.get("height")
                 mode = (op.get("mode") or "fit").lower()
                 bg = op.get("background_color", "black")
-                
                 if w and h:
                     if mode == "fill": 
-                        # Crop to fill
                         self.add_video_filter(f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}")
                     elif mode == "blur":
-                        # DYNAMIC BACKGROUND (Blurred)
-                        # Split stream -> stream 1 (blur background) -> stream 2 (original resize) -> overlay
-                        split_out_1, split_out_2 = self._new_v(), self._new_v()
-                        self.filter_lines.append(f"[{self.vlabel}]split=2[{split_out_1}][{split_out_2}]")
-                        
+                        split1, split2 = self._new_v(), self._new_v()
+                        self.filter_lines.append(f"[{self.vlabel}]split=2[{split1}][{split2}]")
                         bg_out = self._new_v()
-                        # Scale to target then blur heavily
-                        self.filter_lines.append(
-                            f"[{split_out_1}]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
-                            f"boxblur=luma_radius=min(h\,w)/20:luma_power=1:chroma_radius=min(cw\,ch)/20:chroma_power=1[{bg_out}]"
-                        )
-                        
+                        self.filter_lines.append(f"[{split1}]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=luma_radius=min(h\,w)/20:luma_power=1:chroma_radius=min(cw\,ch)/20:chroma_power=1[{bg_out}]")
                         fg_out = self._new_v()
-                        # Fit original video
-                        self.filter_lines.append(
-                            f"[{split_out_2}]scale={w}:{h}:force_original_aspect_ratio=decrease[{fg_out}]"
-                        )
-                        
-                        # Overlay
+                        self.filter_lines.append(f"[{split2}]scale={w}:{h}:force_original_aspect_ratio=decrease[{fg_out}]")
                         final_out = self._new_v()
-                        self.filter_lines.append(
-                            f"[{bg_out}][{fg_out}]overlay=(W-w)/2:(H-h)/2[{final_out}]"
-                        )
+                        self.filter_lines.append(f"[{bg_out}][{fg_out}]overlay=(W-w)/2:(H-h)/2[{final_out}]")
                         self.vlabel = final_out
                     else: 
-                        # Fit (Black/Color bars)
                         self.add_video_filter(f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color={bg}")
-            
             elif action == "speed":
                 factor = float(op.get("factor", 1.0))
                 if not math.isclose(factor, 1.0):
@@ -323,136 +258,87 @@ class FFmpegEditor:
                         if op.get("preserve_audio_pitch", True):
                             for f in atempo_chain(1 / factor): self.add_audio_filter(f"atempo={f}")
                         else: self.add_audio_filter(f"asetrate=sample_rate*{factor},aresample=sample_rate")
-            
             elif action == "rotate":
                 deg = int(op.get("degrees", 0)) % 360
                 if deg == 90: self.add_video_filter("transpose=1")
                 elif deg == 180: self.add_video_filter("transpose=1,transpose=1")
                 elif deg == 270: self.add_video_filter("transpose=2")
-            
             elif action == "flip_horizontal": self.add_video_filter("hflip")
             elif action == "flip_vertical": self.add_video_filter("vflip")
-            
             elif action == "crop":
                 x, y, w, h = op.get("x", 0), op.get("y", 0), op.get("width"), op.get("height")
                 if w and h: self.add_video_filter(f"crop={w}:{h}:{x}:{y}")
-            
             elif action == "fade_video":
                 self.add_video_filter(f"fade=t={op.get('direction', 'in')}:st={op.get('start_time', 0)}:d={op.get('duration', 1)}:color={op.get('color', 'black')}")
-            
             elif action == "text":
-                # AUTO-WRAP LOGIC
                 raw_content = op.get("content", "")
                 wrap_width = op.get("wrap_width", 40)
                 wrapped_lines = textwrap.fill(raw_content, width=wrap_width)
                 content = escape_drawtext(wrapped_lines)
-
                 fx, fy = position_to_xy(op.get("position"), op.get("x"), op.get("y"))
-                
-                parts = [
-                    f"text='{content}'", 
-                    f"x={fx}", f"y={fy}", 
-                    f"fontsize={op.get('size', 36)}", 
-                    f"fontcolor={op.get('color', 'white')}",
-                    f"line_spacing={op.get('line_spacing', 5)}"
-                ]
-                
-                # Font resolution
+                parts = [f"text='{content}'", f"x={fx}", f"y={fy}", f"fontsize={op.get('size', 36)}", f"fontcolor={op.get('color', 'white')}", f"line_spacing={op.get('line_spacing', 5)}"]
                 font_path = op.get("fontfile") or self.default_fontfile
-                if font_path:
-                    parts.append(f"fontfile='{escape_path_for_filter(font_path)}'")
-                elif op.get("font"):
-                    parts.append(f"font='{op['font']}'")
-                
+                if font_path: parts.append(f"fontfile='{escape_path_for_filter(font_path)}'")
+                elif op.get("font"): parts.append(f"font='{op['font']}'")
                 if op.get("outline"): parts.append("borderw=2:bordercolor=black")
                 if op.get("shadow"): parts.append("shadowcolor=black:shadowx=2:shadowy=2")
-                
                 if op.get("start_time") is not None and op.get("duration") is not None:
                     parts.append(f"enable='between(t,{op['start_time']},{op['start_time']+op['duration']})'")
-                
                 self.add_video_filter("drawtext=" + ":".join(parts))
-            
             elif action == "image_overlay":
                 path = self._resolve_path(op)
                 if not path: continue
-                
-                # SAFE SCALING (Even numbers)
                 scale_expr = None
                 raw_scale = op.get("scale")
-                if raw_scale:
-                     scale_expr = f"trunc(iw*{raw_scale}/2)*2:trunc(ih*{raw_scale}/2)*2"
-                
+                if raw_scale: scale_expr = f"trunc(iw*{raw_scale}/2)*2:trunc(ih*{raw_scale}/2)*2"
                 ov_label = self.add_overlay_input(path, scale_expr, op.get("opacity"))
-                
                 ox, oy = overlay_position_to_xy(op.get("position"), op.get("x"), op.get("y"))
                 overlay_expr = f"overlay=x={ox}:y={oy}"
-                
                 if op.get("start_time") is not None and op.get("duration") is not None:
                     overlay_expr += f":enable='between(t,{op['start_time']},{op['start_time']+op['duration']})'"
-                
                 out = self._new_v()
                 self.filter_lines.append(f"[{self.vlabel}][{ov_label}]{overlay_expr}[{out}]")
                 self.vlabel = out
-            
             elif action == "adjust":
                 args = []
                 for k in ["brightness", "contrast", "saturation", "gamma"]:
                     if op.get(k): args.append(f"{k}={op[k]}")
                 if args: self.add_video_filter("eq=" + ":".join(args))
-            
             elif action == "blur":
                 if op.get("sigma"): self.add_video_filter(f"gblur=sigma={op['sigma']}")
-            
             elif action == "sharpen":
                 self.add_video_filter(f"unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount={op.get('amount', 1.0)}")
-            
             elif action == "replace_audio":
                 path = self._resolve_path(op)
                 if path:
-                    idx = len(self.inputs)
-                    self.inputs.append(path)
-                    self.alabel = f"a{self.next_a}"
-                    self.next_a += 1
+                    idx = len(self.inputs); self.inputs.append(path)
+                    self.alabel = self._new_a()
                     self.filter_lines.append(f"[{idx}:a]anull[{self.alabel}]")
-            
             elif action == "mix_audio":
                 path = self._resolve_path(op)
                 if path:
                     music_vol = op.get("music_volume", 1.0)
-                    idx = len(self.inputs)
-                    self.inputs.append(path)
-                    music_lbl = f"a{self.next_a}"
-                    self.next_a += 1
+                    idx = len(self.inputs); self.inputs.append(path)
+                    music_lbl = self._new_a()
                     self.filter_lines.append(f"[{idx}:a]anull[{music_lbl}_in]")
                     self.filter_lines.append(f"[{music_lbl}_in]volume={music_vol}[{music_lbl}]")
-                    
                     if self.alabel:
                         out = self._new_a()
-                        # normalize=0 is important to prevent volume drop of main track
                         self.filter_lines.append(f"[{self.alabel}][{music_lbl}]amix=inputs=2:duration=first:normalize=0[{out}]")
                         self.alabel = out
-                    else:
-                        self.alabel = music_lbl
-
+                    else: self.alabel = music_lbl
             elif action == "volume":
                 if self.alabel:
                     if "gain" in op: self.add_audio_filter(f"volume={op['gain']}dB")
                     elif "multiplier" in op: self.add_audio_filter(f"volume={op['multiplier']}")
-            
             elif action == "mute":
-                self.drop_audio = True
-                self.alabel = None
-            
+                self.drop_audio = True; self.alabel = None
             elif action == "fade_audio":
-                if self.alabel:
-                    self.add_audio_filter(f"afade=t={op.get('direction', 'in')}:st={op.get('start_time', 0)}:d={op.get('duration', 1)}")
-            
+                if self.alabel: self.add_audio_filter(f"afade=t={op.get('direction', 'in')}:st={op.get('start_time', 0)}:d={op.get('duration', 1)}")
             elif action == "burn_subtitles":
                 path = self._resolve_path(op)
                 if path: self.add_video_filter(f"subtitles='{escape_path_for_filter(path)}'")
-            
-            elif action == "thumbnail":
-                self.thumb_actions.append(op)
+            elif action == "thumbnail": self.thumb_actions.append(op)
 
     def build(self) -> Tuple[List[str], List[List[str]]]:
         self.handle_operations()
@@ -463,8 +349,7 @@ class FFmpegEditor:
         
         cmd = [self.ffmpeg, "-y"]
         for inp in self.inputs: cmd += ["-i", inp]
-        if self.filter_lines:
-            cmd += ["-filter_complex", ";".join(self.filter_lines)]
+        if self.filter_lines: cmd += ["-filter_complex", ";".join(self.filter_lines)]
         cmd += ["-map", f"[{self.vlabel}]"]
         if not self.drop_audio and self.alabel: cmd += ["-map", f"[{self.alabel}]"]
         else: cmd += ["-an"]
@@ -488,41 +373,21 @@ def load_spec(path: str) -> Dict:
         spec = json.load(f)
     return preprocess_spec(spec)
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="FFmpeg JSON-driven video editor")
-    p.add_argument("--spec", help="Path to JSON spec file")
-    p.add_argument("--json", help="Raw JSON string")
-    p.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg executable")
-    p.add_argument("--ffprobe", default="ffprobe", help="ffprobe executable")
-    p.add_argument("--dry-run", action="store_true", help="Print command without running")
-    return p.parse_args()
-
 def main() -> None:
-    args = parse_args()
-    spec = None
+    p = argparse.ArgumentParser()
+    p.add_argument("--spec", required=True)
+    p.add_argument("--dry-run", action="store_true")
+    args = p.parse_args()
+    
     try:
-        if args.json:
-            try:
-                raw_spec = json.loads(args.json)
-                spec = preprocess_spec(raw_spec)
-            except json.JSONDecodeError as e:
-                print(f"Error parsing --json: {e}")
-                sys.exit(1)
-        elif args.spec:
-            spec = load_spec(args.spec)
-        else:
-            print("Error: Either --spec or --json argument is required")
-            sys.exit(1)
-
-        editor = FFmpegEditor(spec, ffmpeg=args.ffmpeg, ffprobe=args.ffprobe)
+        spec = load_spec(args.spec)
+        editor = FFmpegEditor(spec)
         cmd, thumb_cmds = editor.build()
         run(cmd, dry_run=args.dry_run)
         if not args.dry_run:
-            for tcmd in thumb_cmds:
-                run(tcmd, dry_run=False)
-                
+            for tcmd in thumb_cmds: run(tcmd)
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"Error: {e}")
         raise
     finally:
         cleanup_temp_files()
