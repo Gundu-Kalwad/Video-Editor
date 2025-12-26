@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 FFmpeg-based video editor (Agent/CI friendly).
-Takes a JSON spec describing operations and builds an FFmpeg command.
-Features: Base64 decoding, URL downloading, Auto-Cleanup, Text Wrapping, Dynamic Blur.
+Features: Base64 decoding, URL downloading, Auto-Cleanup, Text Wrapping.
 """
 import argparse
 import base64
@@ -100,7 +99,7 @@ def escape_drawtext(text: str) -> str:
     text = text.replace("\\", "\\\\") 
     text = text.replace(":", "\\:")
     text = text.replace("%", "\\%")
-    text = text.replace("'", "\\'") # Correct escape for drawtext='...'
+    text = text.replace("'", "\\'") 
     return text
 
 def escape_path_for_filter(path: str) -> str:
@@ -175,7 +174,7 @@ class FFmpegEditor:
         if desired in self.assets:
             val = self.assets[desired]
             return str(val[0]) if isinstance(val, list) else str(val)
-        return desired # Fallback
+        return desired
 
     def _init_streams(self, main_input: str) -> None:
         self.vlabel = "v0"; self.filter_lines.append(f"[0:v]null[{self.vlabel}]")
@@ -368,24 +367,52 @@ class FFmpegEditor:
             thumb_cmds.append([self.ffmpeg, "-y", "-ss", str(t.get("timestamp", 0)), "-i", out_path, "-vframes", "1", thumb_out])
         return cmd, thumb_cmds
 
-def load_spec(path: str) -> Dict:
+def load_spec_from_path(path: str) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
         spec = json.load(f)
     return preprocess_spec(spec)
 
+def load_spec_from_env() -> Dict:
+    # Safely load JSON from Environment Variable
+    env_str = os.environ.get("JSON_PAYLOAD", "")
+    if not env_str:
+        raise ValueError("JSON_PAYLOAD environment variable is empty.")
+    try:
+        spec = json.loads(env_str)
+        return preprocess_spec(spec)
+    except json.JSONDecodeError as e:
+        print(f"[Fatal] Invalid JSON in Environment Variable: {e}")
+        print(f"Content dump: {env_str[:100]}...")
+        sys.exit(1)
+
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--spec", required=True)
+    p.add_argument("--spec", help="Path to JSON spec file")
+    p.add_argument("--json", help="Direct JSON string")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
     
+    spec = None
     try:
-        spec = load_spec(args.spec)
+        # Priority 1: File
+        if args.spec:
+            spec = load_spec_from_path(args.spec)
+        # Priority 2: Argument
+        elif args.json:
+            spec = preprocess_spec(json.loads(args.json))
+        # Priority 3: Environment Variable (Recommended for CI)
+        elif "JSON_PAYLOAD" in os.environ:
+            spec = load_spec_from_env()
+        else:
+            print("Error: No input provided. Use --spec, --json, or set JSON_PAYLOAD env var.")
+            sys.exit(1)
+
         editor = FFmpegEditor(spec)
         cmd, thumb_cmds = editor.build()
         run(cmd, dry_run=args.dry_run)
         if not args.dry_run:
             for tcmd in thumb_cmds: run(tcmd)
+            
     except Exception as e:
         print(f"Error: {e}")
         raise
