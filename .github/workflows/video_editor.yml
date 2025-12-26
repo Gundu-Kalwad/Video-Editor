@@ -15,7 +15,7 @@ jobs:
       - name: 📥 Checkout Code
         uses: actions/checkout@v3
 
-      - name: 🎥 Install FFmpeg (Full Version)
+      - name: 🎥 Install FFmpeg (Full)
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
@@ -27,14 +27,10 @@ jobs:
 
       - name: 🚀 Run Video Editor
         env:
+          # Just map the input to the Env Var. Python reads it directly.
           JSON_PAYLOAD: ${{ inputs.json_spec }}
         run: |
-          # The Easy Way: Write JSON to a file first.
-          # This avoids ALL issues with quotes in Bash.
-          echo "$JSON_PAYLOAD" > job.json
-          
-          # Run the script pointing to the file
-          python video_editor.py --spec job.json
+          python video_editor.py
 
       - name: 📤 Upload Result
         uses: actions/upload-artifact@v4
